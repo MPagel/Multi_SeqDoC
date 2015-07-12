@@ -84,21 +84,25 @@ for more details.
 
 =cut
 
-
-
-
 use strict;
 #use warnings;
 use CGI;
 use ABI;
 use GD::Graph::lines;
+use GD::Image;
+use GD::Image::Orientation;
+#use Data::Dump
 
 my $cgi = new CGI;
 
+#print "Content-type: text/html\n\n";
+
 # Create a list of the four channels to save on having to keep retyping them
 # in loops
-our @trace_list = qw( a_trace g_trace c_trace t_trace );
-our $temp_dir = '/usr/local/apache/htdocs/Temp/';
+our @trace_list = qw( a_trace g_trace c_trace t_trace); #tr_bases
+our @pos_trace_list = qw( a_trace g_trace c_trace t_trace base_pos);
+#our @seq_list = qw( seq );
+our $temp_dir = '/var/www/temp/';
 
 # Get input data parameters from the web page
 # Can be up to 10 input sequences (numbered 0 to 9)
@@ -143,7 +147,8 @@ my $ref_name = $ref_data->{name};
 # By passing a hash reference, the changes made in the subroutine will act on
 # the original hash (which is what we want in this case)
 normalize($ref_data);
-
+my $ref_sequence = $ref_data->{sequence};
+my $ref_bps = $ref_data->{base_pos};
 
 # Extract the data from the test chromatogram files. Get it as an array of hash references
 my @test_data;
@@ -175,10 +180,16 @@ for (0..$testcount) {
 # Finally generate output images - need to create temporary files, as can't
 # include image data directly in html
 # Pass details about image size and scale to the subroutine, also output file
-my $ref_image = get_image($ref_data, 0, 2000, 200, $temp_dir.$$."ref_image.png", $align_length, 1);
+my @retstring = ();
+my $ref_image = get_image($ref_data, 0, 2000, 200, $temp_dir.$$."ref_image.png", $align_length, 1, $ref_data);
+my $nll = rot_image($temp_dir.$$."ref_image");
+
 for (0..$testcount) {
-	my $test_image = get_image($test_data[$_], 0, 2000, 200, $temp_dir.$$."test_image".$_.".png", $align_length, 1 );
-	my $diff_image = get_image($differences[$_], -500, 500, 300, $temp_dir.$$."diff_image".$_.".png", $align_length, 0);
+	my $test_image = get_image($test_data[$_], 0, 2000, 200, $temp_dir.$$."test_image".$_.".png", $align_length, 1, $ref_data );
+	my $diff_image = get_image($differences[$_], -500, 500, 300, $temp_dir.$$."diff_image".$_.".png", $align_length, 0, $ref_data);
+	$retstring[$_] = $diff_image;
+	$nll = rot_image($temp_dir.$$."test_image".$_);
+	$nll = rot_image($temp_dir.$$."diff_image".$_);
 }
 
 # Print out page
@@ -190,18 +201,37 @@ for (0..$testcount) {
 	print "Reference sequence";
 	if ($ref_data->{name}) {print " - ".$ref_data->{name}."<br>"}
 	else {print " - ".$ref_seq."<br>"}
-	print "<img src=\"/Temp/".$$."ref_image.png\"><br>\n";
-	print "<img src=\"/Temp/".$$."diff_image".$_.".png\"><br>\n";
+	print "<img src=\"/temp/".$$."ref_image.png\"><br>\n";
+  print "Reference sequence call: ".$ref_sequence."<br>\n";
+	print "<img src=\"/temp/".$$."diff_image".$_.".png\"><br>\n";
+	print "Dif sequence call: ".$retstring[$_]."<br>\n";
 	print "Test sequence ".($_ + 1);
 	if ($test_data[$_]{name}) {print " - ".$test_data[$_]{name}."<br>"}
 	else {print " - ".$test_seqs[$_]."<br>"}
-	print "<img src=\"/Temp/".$$."test_image".$_.".png\"><br>\n";
+	print "<img src=\"/temp/".$$."test_image".$_.".png\"><br>\n";
+	print "Test sequence call: ".$test_data[$_]{sequence}."<br>\n";
+
+  print "<img src=\"/temp/".$$."test_image".$_."-r.png\">\n";
+  print "<img src=\"/temp/".$$."diff_image".$_."-r.png\">\n";
+  print "<img src=\"/temp/".$$."ref_image-r.png\">\n";
+ 
 }
 print "</body></html>";
 
 
 # Leave output files - they are deleted automatically each night
-
+sub rot_image {
+	my ($filebase) = @_;
+	my $infn = $filebase.".png";
+	open (PNGIN, $infn) || die $infn;
+  my $img = GD::Image->newFromPng(\*PNGIN);
+	close PNGIN;
+	$img = $img->vertical(0,1);
+  open OUT, ">".$filebase."-r.png";
+  print OUT $img->png();
+  close OUT;
+ 
+}
 
 sub error_end {
 	# Deals with errors in input file format
@@ -242,19 +272,38 @@ sub read_chromatogram {
 	# threshold cutoff. Tried with various values, even as high as 500 seems to
 	# work and not delete real sequence, while as low as 5 still removes most
 	# blank sequence. 50 therefore seems to be a good compromise.
-	while ($trace_a[-1] < 50 && $trace_g[-1] < 50 && $trace_c[-1] < 50 && $trace_t[-1] < 50) {
-	pop(@trace_a); pop(@trace_g); pop(@trace_c); pop(@trace_t)}
+  my $seq_length = $#trace_a;
+
+#	while ($trace_a[-1] < 50 && $trace_g[-1] < 50 && $trace_c[-1] < 50 && $trace_t[-1] < 50) {
+#	pop(@trace_a); pop(@trace_g); pop(@trace_c); pop(@trace_t)}
 	
-	my @base_pos = $abi->get_base_calls() or error_end('basecalls');
-	my $sequence = $abi->get_sequence() or error_end('sequence');
-	# Length is number of datapoints in the sequence
-	my $seq_length = $#trace_a;
+	my @base_pos = $abi->get_corrected_base_calls() or error_end('basecalls');
+	my $sequence = $abi->get_corrected_sequence() or error_end('sequence');
+#	my $tr_bases1 = $sequence;
+#	$tr_bases1 =~ tr/ACTGN/12345/;
+#	my @bases_tr2 = split(//, $tr_bases1);
+#	my @bases_tr3 = map { ((ord $_) - (ord "0")) } @bases_tr2;
+#	my $seq_length = $#trace_a;
+#	my @bases_tr;
+#	for (0..$seq_length) {
+#		push @bases_tr,0;
+#	}
+#	for (0..$#bases_tr3) {
+#		$bases_tr[$base_pos[$_]] = $bases_tr3[$_]*100;
+#	}
+  while ($trace_a[-1] < 50 && $trace_g[-1] < 50 && $trace_c[-1] < 50 && $trace_t[-1] < 50) {
+  pop(@trace_a); pop(@trace_g); pop(@trace_c); pop(@trace_t); 
+#  pop(@bases_tr)
+}
+
+
 	# Put all the data together into a hash to return it
 	my %return_hash = (name       => $sample_name,
 										 a_trace    => \@trace_a,
 										 g_trace    => \@trace_g,
 										 c_trace    => \@trace_c,
 										 t_trace    => \@trace_t,
+#										 tr_bases		=> \@bases_tr,
 										 seq_length => $seq_length,
 										 sequence   => $sequence,
 										 base_pos   => \@base_pos,
@@ -279,7 +328,7 @@ sub normalize {
 	# Need to create new reference arrays, since normalization alters the existing
 	# values in the hash
 	my %orig_values;
-	for (@trace_list) {
+	for (@pos_trace_list) {
 		for my $index (0..$trace_length) {
 			$orig_values{$_}[$index] = $trace_data->{$_}[$index];
 		}
@@ -394,7 +443,7 @@ sub get_best_align {
 		my (%temp_ref, %temp_test);
 		# Also need to extract hash values, since they too are references and 
 		# can't be copied for the same reason.
-		for (@trace_list) {
+		for (@pos_trace_list) {
 			my @temp_ref_trace = @{$ref->{$_}};
 			$temp_ref{$_} = \@temp_ref_trace;
 			my @temp_test_trace = @{$test->{$_}};
@@ -428,12 +477,14 @@ sub align {
 			for (@trace_list) {
 				unshift @{$test->{$_}}, $test->{$_}[0];
 			}
+#		unshift @{$test->{$base_pos}}, $test->{$base_pos}[0];
 		}
 	} elsif ($min_index > 0) {
 		# Need to delete lines from test sequence, since it's ahead
 		for (@trace_list) {
 			splice @{$test->{$_}}, 0, $min_index;
 		}
+#		splice @{$test->{$base_pos}}, 0, $min_index;
 	}
 	# Make a note of the offset value for datapoint numbering
 	$test->{initial_offset} = $min_index;
@@ -441,6 +492,8 @@ sub align {
 	
 	
 	# Now check alignments
+  my $totaloffset = $min_index;
+	my @lenofseq = @{$test->{base_pos}};
 	for my $index (0..($trace_length - 1)) {
 		# Each third entry (starting from 1), check alignment
 		# This used to be every fifth entry, but had some issues with compressed sequences
@@ -470,12 +523,25 @@ sub align {
 			for (@trace_list) {
 				splice @{$test->{$_}}, $index, 1;
 			}
+#			splice @{$test->{$base_pos}}, $index, 1;
+			for (0..@{$test->{base_pos}}) {
+				if ($index < $test->{base_pos}[$_]-$min_index) {
+					--$test->{base_pos}[$_];
+				}
+			}
 		}
 		elsif ($offset == -1) {
 		# The reference sample is ahead, need to add a row to test
 			for (@trace_list) {
 				splice @{$test->{$_}}, $index, 0, $test->{$_}[$index];
 			}
+      for (0..@{$test->{base_pos}}) {
+        if ($index < $test->{base_pos}[$_]-$min_index) {
+          ++$test->{base_pos}[$_];
+        }
+			}
+
+#			splice @{$test->{$base_pos}}, $index, 0, $test->{$base_pos}[$index];
 		}
 	}
 	# Reset length of test sequence to correct value
@@ -552,48 +618,163 @@ sub get_image {
 	# This is the slowest section of the program by a long way (typically takes
 	# around 75% of the total calculation time). The limiting factor appears to be
 	# GD::Graph - optimization suggestions are welcome.
-	my ($trace, $min, $max, $size, $output_file, $length, $chromatogram) = @_;
+	my ($trace, $min, $max, $size, $output_file, $length, $chromatogram, $reftrace) = @_;
 	
 	my @labels;
-	for (0..$length) {push @labels, ''}
+	my @calls;
+#	$txtlabs = GD::Graph::Data->new();
+	for (0..$length) {
+		push @labels, '';
+		push @calls, '';
+	}
 	if ($chromatogram) {
 		my @seq = split //, $trace->{sequence};
+#		my $txtlabs = GD::Graph::Data->new();
+
+#print "Content-type: text/html\n\n";
+
 		for (0..@{$trace->{base_pos}}) {
+
 			# Only mark every 10th base from 10.
-			next if $_ % 10;
+#			next if $_ % 10;
 			next unless $_;
 			last unless $trace->{base_pos}[$_];
 			last if ($trace->{base_pos}[$_] - $trace->{initial_offset}) >= $length;
 			# Correct for initial offset - puts numbers in same places as for 
 			# chromatogram (otherwise they can get shifted)
-			$labels[($trace->{base_pos}[$_-1] - $trace->{initial_offset})] = $_;
+			my $adj_ch_ind = $trace->{base_pos}[$_-1] - $trace->{initial_offset};
+			my $flat_ch_ind = $trace->{base_pos}[$_-1];
+			$adj_ch_ind = $adj_ch_ind*($adj_ch_ind>0);
+			$calls[$_-1] = $seq[$_-1];
+			if (!($_ % 10)) {$labels[$adj_ch_ind] = $_}
+			$labels[($adj_ch_ind)].=" ".$calls[$_-1];
+#			print $trace->{base_pos}[$_-1].",";
+#			$txtlabs->add_point($ind,$calls[($ind)];
 		}
+	} else { #dif spectrum
+    my @refseq = split //, $reftrace->{sequence};
+    for (0..@{$reftrace->{base_pos}}) {
+
+      # Only mark every 10th base from 10.
+#     next if $_ % 10;
+      next unless $_;
+      last unless $reftrace->{base_pos}[$_];
+      last if ($reftrace->{base_pos}[$_] - $reftrace->{initial_offset}) >= $length;
+      # Correct for initial offset - puts numbers in same places as for 
+      # chromatogram (otherwise they can get shifted)
+      my $adj_ch_ind = $reftrace->{base_pos}[$_-1] - $reftrace->{initial_offset};
+      my $flat_ch_ind = $reftrace->{base_pos}[$_-1];
+      $adj_ch_ind = $adj_ch_ind*($adj_ch_ind>0);
+      $calls[$_-1] = callmin($trace->{a_trace}[$adj_ch_ind],$trace->{c_trace}[$adj_ch_ind],$trace->{g_trace}[$adj_ch_ind],$trace->{t_trace}[$adj_ch_ind],60);
+			if (!($calls[$_-1])) {
+				$calls[$_-1] = $refseq[$_-1];
+				#$labels[$adj_ch_ind] = ".";
+			}
+      if (!($_ % 10)) {$labels[$adj_ch_ind] .= $_}
+      $labels[($adj_ch_ind)].=" ".($calls[$_-1]);
+			$labels[$adj_ch_ind] =~ tr/A-Za-z/a-zA-Z/;
+		}
+#	$labels =~ tr/A-Za-z/a-zA-Z/;
 	}
+#print "Content-type: text/html\n\n";
+#my @temp = @ { $trace->{t_trace} };
+#print $#temp;
+#print join(", ", @temp);
+#@temp = @ { $trace->{tr_bases} };
+#print $#temp;
+#print join(", ", @temp);
+
 	
-	my @plot_data = (\@labels, $trace->{a_trace}, $trace->{g_trace}, $trace->{c_trace}, $trace->{t_trace});
-	
+	my @plot_data = (\@labels, $trace->{a_trace}, $trace->{g_trace}, $trace->{c_trace}, $trace->{t_trace});                                    #trace tr_bases
 	# Define graph format
 	my $mygraph = GD::Graph::lines->new($length, $size);
 	$mygraph->set(
     x_label     => '',
 		x_ticks     => 0,
-	  y_label     => '',
-		y_max_value => $max,
-		y_min_value => $min,
+	  y1_label     => '',
+		y1_max_value => $max,
+		y1_min_value => $min,
+    y2_label     => '',
+    y2_max_value => 2000,
+    y2_min_value => 0,
+		two_axes => 0,
 		# Draw datasets in 'solid', 'dashed' and 'dotted-dashed' lines
 		line_types  => [1, 1, 1, 1],
 		# Set the thickness of line
 		line_width  => 1,
     # Set colors for datasets
 		dclrs       => ['green', 'black', 'blue', 'red'],
+#		show_values => set_y(1,1,undef),
+		x_labels_vertical => 1,
+		values_vertical => 1,
+	use_axis => [1,1,1,1]
 	) or warn $mygraph->error;
-		
+#	my $pldata = GD::Graph::Data->new(\@plot_data);
+#	my $vals = $pldata->copy;
+#	$vals->wanted(5);
+#	$vals = map{($_ > 0)?1:undef} \@vals;
+#	print "Content-type: text/html\n\n";
+#	my $v2 = map {map {($_ > 0)?$_:undef} @$_} @$vals;
+#	map {map {print $_} @$_ } @$v2;
+#	$mygraph->set(show_values=>$vals);
+#	$vals->map(set_y,(1,$_,undef));
+#	$graph->set(show_values => set_y(1,1,undef));
+#  $values->set_y(1, 1, undef);
+#  $values->set_y(2, 0, undef);
+	
 	my $myimage = $mygraph->plot(\@plot_data) or die $mygraph->error;
 	open OUT, ">".$output_file;
 	print OUT $myimage->png();
 	close OUT;
+
+	return join("",@calls);
+}
+
+sub extractNearBasePos {
+	my ($trace, $pos) = @_;
+#	for (@trace_list) {
+	my @valslist = map {$_ - $pos} @{$trace->{base_pos}};
+#	for (0..@{$trace->{base_pos}})
+#		$trace->{base_pos}[$_-1]
 	
-	return 1;
+}
+
+sub findminmax {
+	my (@list) = @_;
+	my ($mini,$maxi);
+	$mini=$maxi=0;
+	my @list=(1,7,2,-2,7,0,-1);
+	foreach my $i (1..$#list) {
+  	$mini=$i if $list[$i]<$list[$mini];
+  	$maxi=$i if $list[$i]>$list[$maxi];
+	}
+	return ($mini,$maxi);
+}
+
+sub callmin {
+	my ($a, $c, $g, $t, @thresh) = @_;
+	my @list=($a,$c,$g,$t);
+	my @list2=("a","c","g","t");
+	my $min;
+	my $mintext=0;
+	foreach my $i (1..$#list) {
+  	$min=$i if $list[$i]<$list[$min];
+	#  $max=$i if $list[$i]>$list[$max];
+	}
+	if (abs($list[$min]) > @thresh) {
+		$mintext=$list2[$min];
+	}
+	return $mintext;
+	
+}
+
+sub y_format_actg { 
+	my $value = shift;
+	my $ret;
+	if ($value >= 0) { 
+		$ret = sprintf("%s", $value);
+ 	}
+	#$graph->set( 'y2_number_format' => \&y_format ); 
 }
 
 sub demac {
